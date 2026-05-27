@@ -27,10 +27,21 @@ const COLORS = {
   gold: '#ffd166',
   danger: '#a82d34',
   trunk: '#79502b',
+  roof: '#313746',
 }
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value))
+}
+
+function hexToRgb(hex) {
+  const normalized = hex.replace('#', '')
+  const number = Number.parseInt(normalized, 16)
+  return [
+    ((number >> 16) & 255) / 255,
+    ((number >> 8) & 255) / 255,
+    (number & 255) / 255,
+  ]
 }
 
 function shade(hex, amount) {
@@ -39,21 +50,48 @@ function shade(hex, amount) {
   const r = clamp(((number >> 16) & 255) + amount, 0, 255)
   const g = clamp(((number >> 8) & 255) + amount, 0, 255)
   const b = clamp((number & 255) + amount, 0, 255)
-  return `rgb(${r}, ${g}, ${b})`
+  return `#${[r, g, b].map((channel) => channel.toString(16).padStart(2, '0')).join('')}`
 }
 
-function drawPolygon(ctx, points, fill, stroke = 'rgba(255,255,255,0.06)') {
-  ctx.beginPath()
-  points.forEach(([x, y], index) => {
-    if (index === 0) ctx.moveTo(x, y)
-    else ctx.lineTo(x, y)
-  })
-  ctx.closePath()
-  ctx.fillStyle = fill
-  ctx.fill()
-  ctx.strokeStyle = stroke
-  ctx.lineWidth = 1
-  ctx.stroke()
+function createShader(gl, type, source) {
+  const shader = gl.createShader(type)
+  gl.shaderSource(shader, source)
+  gl.compileShader(shader)
+
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    throw new Error(gl.getShaderInfoLog(shader) || 'Erro ao compilar shader WebGL')
+  }
+
+  return shader
+}
+
+function createProgram(gl, vertexSource, fragmentSource) {
+  const program = gl.createProgram()
+  gl.attachShader(program, createShader(gl, gl.VERTEX_SHADER, vertexSource))
+  gl.attachShader(program, createShader(gl, gl.FRAGMENT_SHADER, fragmentSource))
+  gl.linkProgram(program)
+
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    throw new Error(gl.getProgramInfoLog(program) || 'Erro ao criar programa WebGL')
+  }
+
+  return program
+}
+
+function addVertex(vertices, point, color) {
+  const [r, g, b] = hexToRgb(color)
+  vertices.push(point[0], point[1], r, g, b)
+}
+
+function addTriangle(vertices, a, b, c, color) {
+  addVertex(vertices, a, color)
+  addVertex(vertices, b, color)
+  addVertex(vertices, c, color)
+}
+
+function addQuad(vertices, a, b, c, d, color) {
+  addTriangle(vertices, a, b, c, color)
+  addTriangle(vertices, a, c, d, color)
 }
 
 function buildRoutePath(a, b) {
@@ -122,7 +160,7 @@ function createProjector(width, height, time) {
   const cos = Math.cos(yaw)
   const sin = Math.sin(yaw)
   const originX = width / 2
-  const originY = height * 0.18
+  const originY = height * 0.19
 
   return function project(x, z, y = 0) {
     const dx = x - center
@@ -137,138 +175,89 @@ function createProjector(width, height, time) {
   }
 }
 
-function drawPrism(ctx, project, x, z, width, depth, base, height, color) {
+function addPrism(vertices, project, x, z, width, depth, base, height, color) {
   const x0 = x - width / 2
   const x1 = x + width / 2
   const z0 = z - depth / 2
   const z1 = z + depth / 2
 
-  const top = [
-    project(x0, z0, base + height),
-    project(x1, z0, base + height),
-    project(x1, z1, base + height),
-    project(x0, z1, base + height),
-  ]
+  const topA = project(x0, z0, base + height)
+  const topB = project(x1, z0, base + height)
+  const topC = project(x1, z1, base + height)
+  const topD = project(x0, z1, base + height)
 
-  const bottom = [
-    project(x0, z0, base),
-    project(x1, z0, base),
-    project(x1, z1, base),
-    project(x0, z1, base),
-  ]
+  const bottomB = project(x1, z0, base)
+  const bottomC = project(x1, z1, base)
+  const bottomD = project(x0, z1, base)
 
-  drawPolygon(ctx, [top[1], top[2], bottom[2], bottom[1]], shade(color, -46))
-  drawPolygon(ctx, [top[2], top[3], bottom[3], bottom[2]], shade(color, -64))
-  drawPolygon(ctx, top, color)
+  addQuad(vertices, topB, topC, bottomC, bottomB, shade(color, -46))
+  addQuad(vertices, topC, topD, bottomD, bottomC, shade(color, -64))
+  addQuad(vertices, topA, topB, topC, topD, color)
 }
 
-function drawTile(ctx, project, tile, time, routeCells) {
-  const { x, z, type } = tile
-  const isRoute = routeCells.has(`${x}:${z}`)
-  const wave = type === 'water' ? Math.sin(time * 2 + x * 0.8 + z) * 0.035 : 0
-  const height = heightForTile(type, x, z) + wave
-  const color = isRoute ? COLORS.road : colorForTile(type)
-
-  drawPrism(ctx, project, x + 0.5, z + 0.5, 0.96, 0.96, 0, height, color)
-
-  if (isRoute) {
-    drawPrism(ctx, project, x + 0.5, z + 0.5, 0.42, 0.42, height + 0.01, 0.08, COLORS.gold)
-  }
-
-  if (type === 'water') {
-    const p = project(x + 0.5, z + 0.5, height + 0.04)
-    ctx.beginPath()
-    ctx.arc(p[0], p[1], 2.2 + Math.sin(time * 3 + x) * 0.9, 0, Math.PI * 2)
-    ctx.fillStyle = 'rgba(187, 225, 255, 0.42)'
-    ctx.fill()
-  }
-}
-
-function drawPyramid(ctx, project, x, z, width, depth, base, height, color) {
+function addPyramid(vertices, project, x, z, width, depth, base, height, color) {
   const x0 = x - width / 2
   const x1 = x + width / 2
   const z0 = z - depth / 2
   const z1 = z + depth / 2
+
   const a = project(x0, z0, base)
   const b = project(x1, z0, base)
   const c = project(x1, z1, base)
   const d = project(x0, z1, base)
   const top = project(x, z, base + height)
 
-  drawPolygon(ctx, [a, top, b], shade(color, 18))
-  drawPolygon(ctx, [b, top, c], color)
-  drawPolygon(ctx, [c, top, d], shade(color, -38))
-  drawPolygon(ctx, [d, top, a], shade(color, -18))
+  addTriangle(vertices, a, top, b, shade(color, 18))
+  addTriangle(vertices, b, top, c, color)
+  addTriangle(vertices, c, top, d, shade(color, -38))
+  addTriangle(vertices, d, top, a, shade(color, -18))
 }
 
-function drawForest(ctx, project, x, z) {
+function addTile(vertices, project, tile, time, routeCells) {
+  const { x, z, type } = tile
+  const isRoute = routeCells.has(`${x}:${z}`)
+  const wave = type === 'water' ? Math.sin(time * 2 + x * 0.8 + z) * 0.035 : 0
+  const height = heightForTile(type, x, z) + wave
+  const color = isRoute ? COLORS.road : colorForTile(type)
+
+  addPrism(vertices, project, x + 0.5, z + 0.5, 0.96, 0.96, 0, height, color)
+
+  if (isRoute) {
+    addPrism(vertices, project, x + 0.5, z + 0.5, 0.44, 0.44, height + 0.01, 0.08, COLORS.gold)
+  }
+
+  if (type === 'water') {
+    addPrism(vertices, project, x + 0.5, z + 0.5, 0.24, 0.24, height + 0.06, 0.018, shade(COLORS.water, 55))
+  }
+}
+
+function addForest(vertices, project, x, z) {
   const base = heightForTile('forest', x, z) + 0.02
-  drawPrism(ctx, project, x + 0.5, z + 0.5, 0.18, 0.18, base, 0.52, COLORS.trunk)
-  drawPyramid(ctx, project, x + 0.5, z + 0.5, 0.72, 0.72, base + 0.42, 0.88, '#176b2c')
+  addPrism(vertices, project, x + 0.5, z + 0.5, 0.18, 0.18, base, 0.52, COLORS.trunk)
+  addPyramid(vertices, project, x + 0.5, z + 0.5, 0.72, 0.72, base + 0.42, 0.88, '#176b2c')
 }
 
-function drawRock(ctx, project, x, z) {
+function addRock(vertices, project, x, z) {
   const base = heightForTile('rock', x, z) + 0.02
-  drawPyramid(ctx, project, x + 0.5, z + 0.5, 0.72, 0.72, base, 0.74, '#7a7f8c')
+  addPyramid(vertices, project, x + 0.5, z + 0.5, 0.72, 0.72, base, 0.74, '#7a7f8c')
 }
 
-function drawNode(ctx, project, node) {
+function addNode(vertices, project, node) {
   const base = heightForTile('node', node.x, node.z) + 0.04
   const x = node.x + 0.5
   const z = node.z + 0.5
-  const roofColor = node.kind === 'danger' ? COLORS.danger : '#313746'
+  const roofColor = node.kind === 'danger' ? COLORS.danger : COLORS.roof
 
-  drawPrism(ctx, project, x, z, 0.52, 0.52, base, 0.78, '#d49a39')
-  drawPyramid(ctx, project, x, z, 0.86, 0.86, base + 0.72, 0.72, roofColor)
-
-  const label = project(x, z, base + 1.65)
-  ctx.save()
-  ctx.font = '700 12px Inter, system-ui, sans-serif'
-  ctx.textAlign = 'center'
-  ctx.lineWidth = 4
-  ctx.strokeStyle = 'rgba(3, 5, 10, 0.9)'
-  ctx.strokeText(node.label, label[0], label[1])
-  ctx.fillStyle = '#f6e6b2'
-  ctx.fillText(node.label, label[0], label[1])
-  ctx.restore()
+  addPrism(vertices, project, x, z, 0.52, 0.52, base, 0.78, '#d49a39')
+  addPyramid(vertices, project, x, z, 0.86, 0.86, base + 0.72, 0.72, roofColor)
+  addPrism(vertices, project, x, z, 0.16, 0.16, base + 1.52, 0.22, COLORS.gold)
 }
 
-function drawRouteLines(ctx, project) {
-  ctx.save()
-  ctx.lineWidth = 3
-  ctx.lineCap = 'round'
-  ctx.lineJoin = 'round'
-  ctx.shadowBlur = 14
-  ctx.shadowColor = 'rgba(255, 209, 102, 0.55)'
-  ctx.strokeStyle = 'rgba(255, 209, 102, 0.78)'
-
-  ROUTES.forEach(([from, to]) => {
-    const a = ROUTE_NODES.find((node) => node.id === from)
-    const b = ROUTE_NODES.find((node) => node.id === to)
-    const path = buildRoutePath(a, b)
-
-    ctx.beginPath()
-    path.forEach(([x, z], index) => {
-      const point = project(x + 0.5, z + 0.5, 0.54)
-      if (index === 0) ctx.moveTo(point[0], point[1])
-      else ctx.lineTo(point[0], point[1])
-    })
-    ctx.stroke()
-  })
-
-  ctx.restore()
-}
-
-function setupRenderer(canvas, setStatus) {
-  const ctx = canvas.getContext('2d')
-
-  if (!ctx) {
-    setStatus('Canvas 2D indisponível neste navegador.')
-    return () => {}
-  }
-
+function createScene(width, height, time) {
+  const project = createProjector(width, height, time)
   const routeCells = createRouteCells()
   const tiles = []
+  const vertices = []
 
   for (let z = 0; z < MAP_SIZE; z += 1) {
     for (let x = 0; x < MAP_SIZE; x += 1) {
@@ -277,9 +266,74 @@ function setupRenderer(canvas, setStatus) {
   }
 
   tiles.sort((a, b) => a.order - b.order || a.x - b.x)
+  tiles.forEach((tile) => addTile(vertices, project, tile, time, routeCells))
+
+  tiles.forEach((tile) => {
+    if (tile.type === 'forest') addForest(vertices, project, tile.x, tile.z)
+    if (tile.type === 'rock' && (tile.x + tile.z) % 3 === 0) addRock(vertices, project, tile.x, tile.z)
+  })
+
+  ROUTE_NODES
+    .slice()
+    .sort((a, b) => a.x + a.z - (b.x + b.z))
+    .forEach((node) => addNode(vertices, project, node))
+
+  return new Float32Array(vertices)
+}
+
+function setupRenderer(canvas, setStatus) {
+  const gl = canvas.getContext('webgl', { antialias: true, alpha: false }) || canvas.getContext('experimental-webgl')
+
+  if (!gl) {
+    setStatus('WebGL indisponível neste navegador.')
+    return () => {}
+  }
+
+  const vertexSource = `
+    attribute vec2 aPosition;
+    attribute vec3 aColor;
+
+    uniform vec2 uResolution;
+
+    varying vec3 vColor;
+
+    void main() {
+      vec2 zeroToOne = aPosition / uResolution;
+      vec2 zeroToTwo = zeroToOne * 2.0;
+      vec2 clipSpace = zeroToTwo - 1.0;
+
+      gl_Position = vec4(clipSpace * vec2(1.0, -1.0), 0.0, 1.0);
+      vColor = aColor;
+    }
+  `
+
+  const fragmentSource = `
+    precision mediump float;
+
+    varying vec3 vColor;
+
+    void main() {
+      gl_FragColor = vec4(vColor, 1.0);
+    }
+  `
+
+  let program
+  try {
+    program = createProgram(gl, vertexSource, fragmentSource)
+  } catch (error) {
+    setStatus(error.message)
+    return () => {}
+  }
+
+  const buffer = gl.createBuffer()
+  const positionLocation = gl.getAttribLocation(program, 'aPosition')
+  const colorLocation = gl.getAttribLocation(program, 'aColor')
+  const resolutionLocation = gl.getUniformLocation(program, 'uResolution')
+  const stride = 5 * Float32Array.BYTES_PER_ELEMENT
 
   let animationFrame = 0
   let disposed = false
+  let lastVertexCount = 0
 
   function resize() {
     const ratio = Math.min(window.devicePixelRatio || 1, 2)
@@ -291,59 +345,59 @@ function setupRenderer(canvas, setStatus) {
       canvas.height = height
     }
 
-    ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
-    return { width: width / ratio, height: height / ratio }
+    return { width, height, ratio }
   }
 
-  function draw(timeStamp) {
+  function render(timeStamp) {
     if (disposed) return
 
+    const { width, height, ratio } = resize()
+    const cssWidth = width / ratio
+    const cssHeight = height / ratio
     const time = timeStamp * 0.001
-    const { width, height } = resize()
-    const project = createProjector(width, height, time)
+    const scene = createScene(cssWidth, cssHeight, time)
+    const vertexCount = scene.length / 5
 
-    const gradient = ctx.createLinearGradient(0, 0, 0, height)
-    gradient.addColorStop(0, '#08111f')
-    gradient.addColorStop(1, '#02050a')
-    ctx.clearRect(0, 0, width, height)
-    ctx.fillStyle = gradient
-    ctx.fillRect(0, 0, width, height)
+    gl.viewport(0, 0, width, height)
+    gl.clearColor(0.03, 0.055, 0.09, 1)
+    gl.clear(gl.COLOR_BUFFER_BIT)
+    gl.disable(gl.DEPTH_TEST)
+    gl.disable(gl.CULL_FACE)
+    gl.useProgram(program)
 
-    ctx.save()
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.22)'
-    ctx.shadowBlur = 14
-    ctx.shadowOffsetY = 12
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
+    gl.bufferData(gl.ARRAY_BUFFER, scene, gl.DYNAMIC_DRAW)
 
-    tiles.forEach((tile) => drawTile(ctx, project, tile, time, routeCells))
-    drawRouteLines(ctx, project)
+    gl.enableVertexAttribArray(positionLocation)
+    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, stride, 0)
 
-    tiles.forEach((tile) => {
-      if (tile.type === 'forest') drawForest(ctx, project, tile.x, tile.z)
-      if (tile.type === 'rock' && (tile.x + tile.z) % 3 === 0) drawRock(ctx, project, tile.x, tile.z)
-    })
+    gl.enableVertexAttribArray(colorLocation)
+    gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, stride, 2 * Float32Array.BYTES_PER_ELEMENT)
 
-    ROUTE_NODES
-      .slice()
-      .sort((a, b) => a.x + a.z - (b.x + b.z))
-      .forEach((node) => drawNode(ctx, project, node))
+    gl.uniform2f(resolutionLocation, cssWidth, cssHeight)
+    gl.drawArrays(gl.TRIANGLES, 0, vertexCount)
 
-    ctx.restore()
+    if (lastVertexCount !== vertexCount) {
+      lastVertexCount = vertexCount
+      setStatus(`WebGL procedural ativo: ${MAP_SIZE * MAP_SIZE} tiles, ${ROUTE_NODES.length} nós, ${vertexCount} vértices`)
+    }
 
-    animationFrame = requestAnimationFrame(draw)
+    animationFrame = requestAnimationFrame(render)
   }
 
-  setStatus(`Canvas procedural ativo: ${tiles.length} tiles, ${ROUTE_NODES.length} nós`)
-  animationFrame = requestAnimationFrame(draw)
+  animationFrame = requestAnimationFrame(render)
 
   return () => {
     disposed = true
     cancelAnimationFrame(animationFrame)
+    gl.deleteBuffer(buffer)
+    gl.deleteProgram(program)
   }
 }
 
 export default function App() {
   const canvasRef = useRef(null)
-  const [status, setStatus] = useState('Inicializando mapa procedural...')
+  const [status, setStatus] = useState('Inicializando mapa WebGL procedural...')
 
   const routeLabels = useMemo(() => ROUTES.map(([from, to]) => {
     const a = ROUTE_NODES.find((node) => node.id === from)
@@ -357,24 +411,25 @@ export default function App() {
     try {
       return setupRenderer(canvasRef.current, setStatus)
     } catch (error) {
-      setStatus(error.message || 'Erro ao iniciar o mapa procedural.')
+      setStatus(error.message || 'Erro ao iniciar o mapa WebGL.')
       return undefined
     }
   }, [])
 
   return (
     <main className="app-shell">
-      <section className="map-panel" aria-label="Mapa 3D procedural de RPG">
+      <section className="map-panel" aria-label="Mapa 3D procedural de RPG em WebGL">
         <canvas ref={canvasRef} className="map-canvas" />
         <div className="scanline" />
       </section>
 
       <aside className="hud-panel">
         <p className="eyebrow">RPG procedural</p>
-        <h1>Mapa 3D gerado por código</h1>
+        <h1>Mapa 3D WebGL gerado por código</h1>
         <p className="description">
-          Mundo procedural em HTML5 Canvas com tiles, rotas, nós de decisão, água animada e
-          construções geométricas. Não usa GIF, SVG, imagens, texturas, GLB ou GLTF.
+          Mundo procedural em HTML5 Canvas com WebGL, tiles, rotas, nós de decisão,
+          água animada e construções geométricas. Não usa GIF, SVG, imagens,
+          texturas, GLB ou GLTF.
         </p>
 
         <div className="status-card">
