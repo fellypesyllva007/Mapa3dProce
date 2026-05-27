@@ -24,7 +24,7 @@ function createShader(gl, type, source) {
   gl.compileShader(shader)
 
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    throw new Error(gl.getShaderInfoLog(shader))
+    throw new Error(gl.getShaderInfoLog(shader) || 'Falha ao compilar shader WebGL')
   }
 
   return shader
@@ -37,39 +37,79 @@ function createProgram(gl, vertexSource, fragmentSource) {
   gl.linkProgram(program)
 
   if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    throw new Error(gl.getProgramInfoLog(program))
+    throw new Error(gl.getProgramInfoLog(program) || 'Falha ao vincular programa WebGL')
   }
 
   return program
 }
 
-function identity() {
-  return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
-}
-
 function multiply(a, b) {
-  const out = new Array(16).fill(0)
+  const out = new Array(16)
 
-  for (let row = 0; row < 4; row += 1) {
-    for (let col = 0; col < 4; col += 1) {
-      for (let i = 0; i < 4; i += 1) {
-        out[row * 4 + col] += a[row * 4 + i] * b[i * 4 + col]
-      }
-    }
-  }
+  const a00 = a[0]
+  const a01 = a[1]
+  const a02 = a[2]
+  const a03 = a[3]
+  const a10 = a[4]
+  const a11 = a[5]
+  const a12 = a[6]
+  const a13 = a[7]
+  const a20 = a[8]
+  const a21 = a[9]
+  const a22 = a[10]
+  const a23 = a[11]
+  const a30 = a[12]
+  const a31 = a[13]
+  const a32 = a[14]
+  const a33 = a[15]
+
+  let b0 = b[0]
+  let b1 = b[1]
+  let b2 = b[2]
+  let b3 = b[3]
+  out[0] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
+  out[1] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
+  out[2] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
+  out[3] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
+
+  b0 = b[4]
+  b1 = b[5]
+  b2 = b[6]
+  b3 = b[7]
+  out[4] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
+  out[5] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
+  out[6] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
+  out[7] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
+
+  b0 = b[8]
+  b1 = b[9]
+  b2 = b[10]
+  b3 = b[11]
+  out[8] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
+  out[9] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
+  out[10] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
+  out[11] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
+
+  b0 = b[12]
+  b1 = b[13]
+  b2 = b[14]
+  b3 = b[15]
+  out[12] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
+  out[13] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
+  out[14] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
+  out[15] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
 
   return out
 }
 
 function perspective(fov, aspect, near, far) {
   const f = 1 / Math.tan(fov / 2)
-  const range = 1 / (near - far)
 
   return [
     f / aspect, 0, 0, 0,
     0, f, 0, 0,
-    0, 0, (near + far) * range, -1,
-    0, 0, near * far * range * 2, 0,
+    0, 0, (far + near) / (near - far), -1,
+    0, 0, (2 * far * near) / (near - far), 0,
   ]
 }
 
@@ -131,6 +171,12 @@ function addBox(vertices, x, y, z, w, h, d, color) {
   addFace(vertices, color, [x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1], [-1, 0, 0])
 }
 
+function addTriangle(vertices, color, a, b, c, normal) {
+  ;[a, b, c].forEach((point) => {
+    vertices.push(...point, ...color, ...normal)
+  })
+}
+
 function addPyramid(vertices, x, y, z, w, h, d, color) {
   const x0 = x - w / 2
   const x1 = x + w / 2
@@ -143,10 +189,10 @@ function addPyramid(vertices, x, y, z, w, h, d, color) {
   const baseD = [x0, y, z1]
 
   addFace(vertices, color, baseA, baseB, baseC, baseD, [0, -1, 0])
-  addFace(vertices, color, baseA, top, baseB, baseB, [0, 0.65, -0.75])
-  addFace(vertices, color, baseB, top, baseC, baseC, [0.75, 0.65, 0])
-  addFace(vertices, color, baseC, top, baseD, baseD, [0, 0.65, 0.75])
-  addFace(vertices, color, baseD, top, baseA, baseA, [-0.75, 0.65, 0])
+  addTriangle(vertices, color, baseA, top, baseB, [0, 0.65, -0.75])
+  addTriangle(vertices, color, baseB, top, baseC, [0.75, 0.65, 0])
+  addTriangle(vertices, color, baseC, top, baseD, [0, 0.65, 0.75])
+  addTriangle(vertices, color, baseD, top, baseA, [-0.75, 0.65, 0])
 }
 
 function tileType(x, z) {
@@ -241,7 +287,7 @@ function generateScene() {
 }
 
 function setupRenderer(canvas, setStatus) {
-  const gl = canvas.getContext('webgl', { antialias: true })
+  const gl = canvas.getContext('webgl', { antialias: true }) || canvas.getContext('experimental-webgl')
 
   if (!gl) {
     setStatus('WebGL indisponível neste navegador.')
@@ -266,7 +312,7 @@ function setupRenderer(canvas, setStatus) {
       }
 
       vec3 lightDirection = normalize(vec3(0.45, 0.9, 0.35));
-      vLight = max(dot(normalize(aNormal), lightDirection), 0.0) * 0.68 + 0.32;
+      vLight = max(dot(normalize(aNormal), lightDirection), 0.0) * 0.68 + 0.38;
       vColor = aColor;
       gl_Position = uMatrix * vec4(position, 1.0);
     }
@@ -283,7 +329,14 @@ function setupRenderer(canvas, setStatus) {
     }
   `
 
-  const program = createProgram(gl, vertexSource, fragmentSource)
+  let program
+  try {
+    program = createProgram(gl, vertexSource, fragmentSource)
+  } catch (error) {
+    setStatus(error.message)
+    return () => {}
+  }
+
   const stride = 9 * Float32Array.BYTES_PER_ELEMENT
   const scene = generateScene()
   const buffer = gl.createBuffer()
@@ -298,12 +351,13 @@ function setupRenderer(canvas, setStatus) {
   const timeLocation = gl.getUniformLocation(program, 'uTime')
 
   let animationFrame = 0
-  let cameraAngle = -0.75
-  let cameraDistance = 18
+  let cameraAngle = -0.78
+  let cameraDistance = 20
 
   function resize() {
-    const displayWidth = canvas.clientWidth * window.devicePixelRatio
-    const displayHeight = canvas.clientHeight * window.devicePixelRatio
+    const ratio = Math.min(window.devicePixelRatio || 1, 2)
+    const displayWidth = Math.max(1, Math.floor(canvas.clientWidth * ratio))
+    const displayHeight = Math.max(1, Math.floor(canvas.clientHeight * ratio))
 
     if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
       canvas.width = displayWidth
@@ -315,13 +369,13 @@ function setupRenderer(canvas, setStatus) {
     resize()
 
     const seconds = time * 0.001
-    cameraAngle += 0.00045
+    cameraAngle += 0.00035
 
     gl.viewport(0, 0, canvas.width, canvas.height)
     gl.clearColor(0.03, 0.045, 0.07, 1)
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
     gl.enable(gl.DEPTH_TEST)
-    gl.enable(gl.CULL_FACE)
+    gl.disable(gl.CULL_FACE)
     gl.useProgram(program)
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
 
@@ -336,8 +390,12 @@ function setupRenderer(canvas, setStatus) {
 
     const aspect = canvas.width / canvas.height
     const projection = perspective(Math.PI / 4, aspect, 0.1, 100)
-    const eye = [Math.sin(cameraAngle) * cameraDistance, 12, Math.cos(cameraAngle) * cameraDistance]
-    const view = lookAt(eye, [0, 0, 0], [0, 1, 0])
+    const eye = [
+      Math.sin(cameraAngle) * cameraDistance,
+      11,
+      Math.cos(cameraAngle) * cameraDistance,
+    ]
+    const view = lookAt(eye, [0, 0.1, 0], [0, 1, 0])
     const matrix = multiply(projection, view)
 
     gl.uniformMatrix4fv(matrixLocation, false, new Float32Array(matrix))
@@ -349,12 +407,12 @@ function setupRenderer(canvas, setStatus) {
 
   function handleWheel(event) {
     event.preventDefault()
-    cameraDistance = Math.min(26, Math.max(10, cameraDistance + event.deltaY * 0.01))
+    cameraDistance = Math.min(28, Math.max(11, cameraDistance + event.deltaY * 0.01))
   }
 
   canvas.addEventListener('wheel', handleWheel, { passive: false })
   animationFrame = requestAnimationFrame(render)
-  setStatus('Mapa procedural WebGL ativo')
+  setStatus(`Mapa procedural ativo: ${scene.length / 9} vértices`)
 
   return () => {
     cancelAnimationFrame(animationFrame)
@@ -370,7 +428,13 @@ export default function App() {
 
   useEffect(() => {
     if (!canvasRef.current) return undefined
-    return setupRenderer(canvasRef.current, setStatus)
+
+    try {
+      return setupRenderer(canvasRef.current, setStatus)
+    } catch (error) {
+      setStatus(error.message || 'Erro ao iniciar o mapa WebGL.')
+      return undefined
+    }
   }, [])
 
   return (
