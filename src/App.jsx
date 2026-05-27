@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
-const TILE_SIZE = 1
 const MAP_SIZE = 15
 
 const ROUTE_NODES = [
@@ -18,208 +17,43 @@ const ROUTES = [
   ['ponte', 'cripta'],
 ]
 
-function createShader(gl, type, source) {
-  const shader = gl.createShader(type)
-  gl.shaderSource(shader, source)
-  gl.compileShader(shader)
-
-  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-    throw new Error(gl.getShaderInfoLog(shader) || 'Falha ao compilar shader WebGL')
-  }
-
-  return shader
+const COLORS = {
+  grass: '#3c8c42',
+  road: '#8b643d',
+  rock: '#676d78',
+  water: '#1f72b8',
+  forest: '#236e34',
+  node: '#d5a13a',
+  gold: '#ffd166',
+  danger: '#a82d34',
+  trunk: '#79502b',
 }
 
-function createProgram(gl, vertexSource, fragmentSource) {
-  const program = gl.createProgram()
-  gl.attachShader(program, createShader(gl, gl.VERTEX_SHADER, vertexSource))
-  gl.attachShader(program, createShader(gl, gl.FRAGMENT_SHADER, fragmentSource))
-  gl.linkProgram(program)
-
-  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    throw new Error(gl.getProgramInfoLog(program) || 'Falha ao vincular programa WebGL')
-  }
-
-  return program
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value))
 }
 
-function multiply(a, b) {
-  const out = new Array(16)
-
-  const a00 = a[0]
-  const a01 = a[1]
-  const a02 = a[2]
-  const a03 = a[3]
-  const a10 = a[4]
-  const a11 = a[5]
-  const a12 = a[6]
-  const a13 = a[7]
-  const a20 = a[8]
-  const a21 = a[9]
-  const a22 = a[10]
-  const a23 = a[11]
-  const a30 = a[12]
-  const a31 = a[13]
-  const a32 = a[14]
-  const a33 = a[15]
-
-  let b0 = b[0]
-  let b1 = b[1]
-  let b2 = b[2]
-  let b3 = b[3]
-  out[0] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
-  out[1] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
-  out[2] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
-  out[3] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
-
-  b0 = b[4]
-  b1 = b[5]
-  b2 = b[6]
-  b3 = b[7]
-  out[4] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
-  out[5] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
-  out[6] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
-  out[7] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
-
-  b0 = b[8]
-  b1 = b[9]
-  b2 = b[10]
-  b3 = b[11]
-  out[8] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
-  out[9] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
-  out[10] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
-  out[11] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
-
-  b0 = b[12]
-  b1 = b[13]
-  b2 = b[14]
-  b3 = b[15]
-  out[12] = b0 * a00 + b1 * a10 + b2 * a20 + b3 * a30
-  out[13] = b0 * a01 + b1 * a11 + b2 * a21 + b3 * a31
-  out[14] = b0 * a02 + b1 * a12 + b2 * a22 + b3 * a32
-  out[15] = b0 * a03 + b1 * a13 + b2 * a23 + b3 * a33
-
-  return out
+function shade(hex, amount) {
+  const color = hex.replace('#', '')
+  const number = Number.parseInt(color, 16)
+  const r = clamp(((number >> 16) & 255) + amount, 0, 255)
+  const g = clamp(((number >> 8) & 255) + amount, 0, 255)
+  const b = clamp((number & 255) + amount, 0, 255)
+  return `rgb(${r}, ${g}, ${b})`
 }
 
-function perspective(fov, aspect, near, far) {
-  const f = 1 / Math.tan(fov / 2)
-
-  return [
-    f / aspect, 0, 0, 0,
-    0, f, 0, 0,
-    0, 0, (far + near) / (near - far), -1,
-    0, 0, (2 * far * near) / (near - far), 0,
-  ]
-}
-
-function normalize(v) {
-  const length = Math.hypot(v[0], v[1], v[2]) || 1
-  return [v[0] / length, v[1] / length, v[2] / length]
-}
-
-function subtract(a, b) {
-  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-function cross(a, b) {
-  return [
-    a[1] * b[2] - a[2] * b[1],
-    a[2] * b[0] - a[0] * b[2],
-    a[0] * b[1] - a[1] * b[0],
-  ]
-}
-
-function dot(a, b) {
-  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-
-function lookAt(eye, target, up) {
-  const z = normalize(subtract(eye, target))
-  const x = normalize(cross(up, z))
-  const y = cross(z, x)
-
-  return [
-    x[0], y[0], z[0], 0,
-    x[1], y[1], z[1], 0,
-    x[2], y[2], z[2], 0,
-    -dot(x, eye), -dot(y, eye), -dot(z, eye), 1,
-  ]
-}
-
-function addFace(vertices, color, a, b, c, d, normal) {
-  const points = [a, b, c, a, c, d]
-
-  points.forEach((point) => {
-    vertices.push(...point, ...color, ...normal)
+function drawPolygon(ctx, points, fill, stroke = 'rgba(255,255,255,0.06)') {
+  ctx.beginPath()
+  points.forEach(([x, y], index) => {
+    if (index === 0) ctx.moveTo(x, y)
+    else ctx.lineTo(x, y)
   })
-}
-
-function addBox(vertices, x, y, z, w, h, d, color) {
-  const x0 = x - w / 2
-  const x1 = x + w / 2
-  const y0 = y
-  const y1 = y + h
-  const z0 = z - d / 2
-  const z1 = z + d / 2
-
-  addFace(vertices, color, [x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1], [0, 1, 0])
-  addFace(vertices, color, [x0, y0, z1], [x1, y0, z1], [x1, y0, z0], [x0, y0, z0], [0, -1, 0])
-  addFace(vertices, color, [x0, y0, z1], [x0, y1, z1], [x1, y1, z1], [x1, y0, z1], [0, 0, 1])
-  addFace(vertices, color, [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z0], [0, 0, -1])
-  addFace(vertices, color, [x1, y0, z1], [x1, y1, z1], [x1, y1, z0], [x1, y0, z0], [1, 0, 0])
-  addFace(vertices, color, [x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1], [-1, 0, 0])
-}
-
-function addTriangle(vertices, color, a, b, c, normal) {
-  ;[a, b, c].forEach((point) => {
-    vertices.push(...point, ...color, ...normal)
-  })
-}
-
-function addPyramid(vertices, x, y, z, w, h, d, color) {
-  const x0 = x - w / 2
-  const x1 = x + w / 2
-  const z0 = z - d / 2
-  const z1 = z + d / 2
-  const top = [x, y + h, z]
-  const baseA = [x0, y, z0]
-  const baseB = [x1, y, z0]
-  const baseC = [x1, y, z1]
-  const baseD = [x0, y, z1]
-
-  addFace(vertices, color, baseA, baseB, baseC, baseD, [0, -1, 0])
-  addTriangle(vertices, color, baseA, top, baseB, [0, 0.65, -0.75])
-  addTriangle(vertices, color, baseB, top, baseC, [0.75, 0.65, 0])
-  addTriangle(vertices, color, baseC, top, baseD, [0, 0.65, 0.75])
-  addTriangle(vertices, color, baseD, top, baseA, [-0.75, 0.65, 0])
-}
-
-function tileType(x, z) {
-  const node = ROUTE_NODES.find((item) => item.x === x && item.z === z)
-  if (node) return 'node'
-
-  if ((x === 7 && z > 4 && z < 12) || (z === 8 && x > 2 && x < 8)) return 'road'
-  if ((x > 9 && z > 8) || (x < 3 && z < 4)) return 'rock'
-  if ((x === 4 && z > 3 && z < 12) || (z === 6 && x > 5 && x < 10)) return 'water'
-  if ((x + z) % 7 === 0) return 'forest'
-  return 'grass'
-}
-
-function heightForTile(type, x, z) {
-  if (type === 'rock') return 0.35 + ((x * 11 + z * 7) % 3) * 0.18
-  if (type === 'water') return 0.04
-  if (type === 'node') return 0.16
-  return 0.12 + Math.sin(x * 0.8 + z * 0.35) * 0.025
-}
-
-function colorForTile(type) {
-  if (type === 'road') return [0.47, 0.34, 0.22]
-  if (type === 'rock') return [0.36, 0.38, 0.43]
-  if (type === 'water') return [0.1, 0.32, 0.55]
-  if (type === 'forest') return [0.1, 0.34, 0.16]
-  if (type === 'node') return [0.77, 0.55, 0.2]
-  return [0.22, 0.48, 0.24]
+  ctx.closePath()
+  ctx.fillStyle = fill
+  ctx.fill()
+  ctx.strokeStyle = stroke
+  ctx.lineWidth = 1
+  ctx.stroke()
 }
 
 function buildRoutePath(a, b) {
@@ -241,184 +75,269 @@ function buildRoutePath(a, b) {
   return points
 }
 
-function generateScene() {
-  const vertices = []
-  const center = (MAP_SIZE - 1) / 2
-
-  for (let z = 0; z < MAP_SIZE; z += 1) {
-    for (let x = 0; x < MAP_SIZE; x += 1) {
-      const type = tileType(x, z)
-      const wx = (x - center) * TILE_SIZE
-      const wz = (z - center) * TILE_SIZE
-      const h = heightForTile(type, x, z)
-      const color = colorForTile(type)
-      addBox(vertices, wx, -0.08, wz, 0.94, h, 0.94, color)
-
-      if (type === 'forest') {
-        addBox(vertices, wx, h - 0.08, wz, 0.16, 0.42, 0.16, [0.32, 0.19, 0.09])
-        addPyramid(vertices, wx, h + 0.22, wz, 0.56, 0.72, 0.56, [0.05, 0.27, 0.1])
-      }
-
-      if (type === 'rock' && (x + z) % 3 === 0) {
-        addPyramid(vertices, wx, h - 0.08, wz, 0.72, 0.8, 0.72, [0.28, 0.29, 0.34])
-      }
-    }
-  }
+function createRouteCells() {
+  const cells = new Set()
 
   ROUTES.forEach(([from, to]) => {
     const a = ROUTE_NODES.find((node) => node.id === from)
     const b = ROUTE_NODES.find((node) => node.id === to)
+    buildRoutePath(a, b).forEach(([x, z]) => cells.add(`${x}:${z}`))
+  })
 
-    buildRoutePath(a, b).forEach(([x, z]) => {
-      const wx = (x - center) * TILE_SIZE
-      const wz = (z - center) * TILE_SIZE
-      addBox(vertices, wx, 0.09, wz, 0.38, 0.055, 0.38, [0.95, 0.76, 0.28])
+  return cells
+}
+
+function tileType(x, z) {
+  const node = ROUTE_NODES.find((item) => item.x === x && item.z === z)
+  if (node) return 'node'
+
+  if ((x > 9 && z > 8) || (x < 3 && z < 4)) return 'rock'
+  if ((x === 4 && z > 3 && z < 12) || (z === 6 && x > 5 && x < 10)) return 'water'
+  if ((x + z) % 7 === 0) return 'forest'
+  return 'grass'
+}
+
+function heightForTile(type, x, z) {
+  if (type === 'rock') return 0.55 + ((x * 11 + z * 7) % 3) * 0.16
+  if (type === 'water') return 0.08
+  if (type === 'node') return 0.3
+  if (type === 'forest') return 0.26
+  return 0.2 + Math.sin(x * 0.8 + z * 0.35) * 0.035
+}
+
+function colorForTile(type) {
+  if (type === 'rock') return COLORS.rock
+  if (type === 'water') return COLORS.water
+  if (type === 'forest') return COLORS.forest
+  if (type === 'node') return COLORS.node
+  return COLORS.grass
+}
+
+function createProjector(width, height, time) {
+  const tileWidth = clamp(Math.min(width / (MAP_SIZE * 1.15), height / (MAP_SIZE * 0.62)), 22, 54)
+  const tileHeight = tileWidth * 0.52
+  const heightScale = tileWidth * 0.72
+  const center = MAP_SIZE / 2
+  const yaw = Math.sin(time * 0.18) * 0.08
+  const cos = Math.cos(yaw)
+  const sin = Math.sin(yaw)
+  const originX = width / 2
+  const originY = height * 0.18
+
+  return function project(x, z, y = 0) {
+    const dx = x - center
+    const dz = z - center
+    const rx = dx * cos - dz * sin
+    const rz = dx * sin + dz * cos
+
+    return [
+      originX + (rx - rz) * (tileWidth / 2),
+      originY + (rx + rz) * (tileHeight / 2) - y * heightScale,
+    ]
+  }
+}
+
+function drawPrism(ctx, project, x, z, width, depth, base, height, color) {
+  const x0 = x - width / 2
+  const x1 = x + width / 2
+  const z0 = z - depth / 2
+  const z1 = z + depth / 2
+
+  const top = [
+    project(x0, z0, base + height),
+    project(x1, z0, base + height),
+    project(x1, z1, base + height),
+    project(x0, z1, base + height),
+  ]
+
+  const bottom = [
+    project(x0, z0, base),
+    project(x1, z0, base),
+    project(x1, z1, base),
+    project(x0, z1, base),
+  ]
+
+  drawPolygon(ctx, [top[1], top[2], bottom[2], bottom[1]], shade(color, -46))
+  drawPolygon(ctx, [top[2], top[3], bottom[3], bottom[2]], shade(color, -64))
+  drawPolygon(ctx, top, color)
+}
+
+function drawTile(ctx, project, tile, time, routeCells) {
+  const { x, z, type } = tile
+  const isRoute = routeCells.has(`${x}:${z}`)
+  const wave = type === 'water' ? Math.sin(time * 2 + x * 0.8 + z) * 0.035 : 0
+  const height = heightForTile(type, x, z) + wave
+  const color = isRoute ? COLORS.road : colorForTile(type)
+
+  drawPrism(ctx, project, x + 0.5, z + 0.5, 0.96, 0.96, 0, height, color)
+
+  if (isRoute) {
+    drawPrism(ctx, project, x + 0.5, z + 0.5, 0.42, 0.42, height + 0.01, 0.08, COLORS.gold)
+  }
+
+  if (type === 'water') {
+    const p = project(x + 0.5, z + 0.5, height + 0.04)
+    ctx.beginPath()
+    ctx.arc(p[0], p[1], 2.2 + Math.sin(time * 3 + x) * 0.9, 0, Math.PI * 2)
+    ctx.fillStyle = 'rgba(187, 225, 255, 0.42)'
+    ctx.fill()
+  }
+}
+
+function drawPyramid(ctx, project, x, z, width, depth, base, height, color) {
+  const x0 = x - width / 2
+  const x1 = x + width / 2
+  const z0 = z - depth / 2
+  const z1 = z + depth / 2
+  const a = project(x0, z0, base)
+  const b = project(x1, z0, base)
+  const c = project(x1, z1, base)
+  const d = project(x0, z1, base)
+  const top = project(x, z, base + height)
+
+  drawPolygon(ctx, [a, top, b], shade(color, 18))
+  drawPolygon(ctx, [b, top, c], color)
+  drawPolygon(ctx, [c, top, d], shade(color, -38))
+  drawPolygon(ctx, [d, top, a], shade(color, -18))
+}
+
+function drawForest(ctx, project, x, z) {
+  const base = heightForTile('forest', x, z) + 0.02
+  drawPrism(ctx, project, x + 0.5, z + 0.5, 0.18, 0.18, base, 0.52, COLORS.trunk)
+  drawPyramid(ctx, project, x + 0.5, z + 0.5, 0.72, 0.72, base + 0.42, 0.88, '#176b2c')
+}
+
+function drawRock(ctx, project, x, z) {
+  const base = heightForTile('rock', x, z) + 0.02
+  drawPyramid(ctx, project, x + 0.5, z + 0.5, 0.72, 0.72, base, 0.74, '#7a7f8c')
+}
+
+function drawNode(ctx, project, node) {
+  const base = heightForTile('node', node.x, node.z) + 0.04
+  const x = node.x + 0.5
+  const z = node.z + 0.5
+  const roofColor = node.kind === 'danger' ? COLORS.danger : '#313746'
+
+  drawPrism(ctx, project, x, z, 0.52, 0.52, base, 0.78, '#d49a39')
+  drawPyramid(ctx, project, x, z, 0.86, 0.86, base + 0.72, 0.72, roofColor)
+
+  const label = project(x, z, base + 1.65)
+  ctx.save()
+  ctx.font = '700 12px Inter, system-ui, sans-serif'
+  ctx.textAlign = 'center'
+  ctx.lineWidth = 4
+  ctx.strokeStyle = 'rgba(3, 5, 10, 0.9)'
+  ctx.strokeText(node.label, label[0], label[1])
+  ctx.fillStyle = '#f6e6b2'
+  ctx.fillText(node.label, label[0], label[1])
+  ctx.restore()
+}
+
+function drawRouteLines(ctx, project) {
+  ctx.save()
+  ctx.lineWidth = 3
+  ctx.lineCap = 'round'
+  ctx.lineJoin = 'round'
+  ctx.shadowBlur = 14
+  ctx.shadowColor = 'rgba(255, 209, 102, 0.55)'
+  ctx.strokeStyle = 'rgba(255, 209, 102, 0.78)'
+
+  ROUTES.forEach(([from, to]) => {
+    const a = ROUTE_NODES.find((node) => node.id === from)
+    const b = ROUTE_NODES.find((node) => node.id === to)
+    const path = buildRoutePath(a, b)
+
+    ctx.beginPath()
+    path.forEach(([x, z], index) => {
+      const point = project(x + 0.5, z + 0.5, 0.54)
+      if (index === 0) ctx.moveTo(point[0], point[1])
+      else ctx.lineTo(point[0], point[1])
     })
+    ctx.stroke()
   })
 
-  ROUTE_NODES.forEach((node) => {
-    const wx = (node.x - center) * TILE_SIZE
-    const wz = (node.z - center) * TILE_SIZE
-    addBox(vertices, wx, 0.11, wz, 0.42, 0.55, 0.42, [0.82, 0.62, 0.26])
-    addPyramid(vertices, wx, 0.66, wz, 0.78, 0.58, 0.78, node.kind === 'danger' ? [0.55, 0.1, 0.14] : [0.2, 0.2, 0.24])
-  })
-
-  return new Float32Array(vertices)
+  ctx.restore()
 }
 
 function setupRenderer(canvas, setStatus) {
-  const gl = canvas.getContext('webgl', { antialias: true }) || canvas.getContext('experimental-webgl')
+  const ctx = canvas.getContext('2d')
 
-  if (!gl) {
-    setStatus('WebGL indisponível neste navegador.')
+  if (!ctx) {
+    setStatus('Canvas 2D indisponível neste navegador.')
     return () => {}
   }
 
-  const vertexSource = `
-    attribute vec3 aPosition;
-    attribute vec3 aColor;
-    attribute vec3 aNormal;
+  const routeCells = createRouteCells()
+  const tiles = []
 
-    uniform mat4 uMatrix;
-    uniform float uTime;
-
-    varying vec3 vColor;
-    varying float vLight;
-
-    void main() {
-      vec3 position = aPosition;
-      if (aColor.b > aColor.r && aColor.b > aColor.g) {
-        position.y += sin(uTime * 1.7 + aPosition.x * 2.2 + aPosition.z) * 0.025;
-      }
-
-      vec3 lightDirection = normalize(vec3(0.45, 0.9, 0.35));
-      vLight = max(dot(normalize(aNormal), lightDirection), 0.0) * 0.68 + 0.38;
-      vColor = aColor;
-      gl_Position = uMatrix * vec4(position, 1.0);
+  for (let z = 0; z < MAP_SIZE; z += 1) {
+    for (let x = 0; x < MAP_SIZE; x += 1) {
+      tiles.push({ x, z, type: tileType(x, z), order: x + z })
     }
-  `
-
-  const fragmentSource = `
-    precision mediump float;
-
-    varying vec3 vColor;
-    varying float vLight;
-
-    void main() {
-      gl_FragColor = vec4(vColor * vLight, 1.0);
-    }
-  `
-
-  let program
-  try {
-    program = createProgram(gl, vertexSource, fragmentSource)
-  } catch (error) {
-    setStatus(error.message)
-    return () => {}
   }
 
-  const stride = 9 * Float32Array.BYTES_PER_ELEMENT
-  const scene = generateScene()
-  const buffer = gl.createBuffer()
-
-  gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
-  gl.bufferData(gl.ARRAY_BUFFER, scene, gl.STATIC_DRAW)
-
-  const positionLocation = gl.getAttribLocation(program, 'aPosition')
-  const colorLocation = gl.getAttribLocation(program, 'aColor')
-  const normalLocation = gl.getAttribLocation(program, 'aNormal')
-  const matrixLocation = gl.getUniformLocation(program, 'uMatrix')
-  const timeLocation = gl.getUniformLocation(program, 'uTime')
+  tiles.sort((a, b) => a.order - b.order || a.x - b.x)
 
   let animationFrame = 0
-  let cameraAngle = -0.78
-  let cameraDistance = 20
+  let disposed = false
 
   function resize() {
     const ratio = Math.min(window.devicePixelRatio || 1, 2)
-    const displayWidth = Math.max(1, Math.floor(canvas.clientWidth * ratio))
-    const displayHeight = Math.max(1, Math.floor(canvas.clientHeight * ratio))
+    const width = Math.max(1, Math.floor(canvas.clientWidth * ratio))
+    const height = Math.max(1, Math.floor(canvas.clientHeight * ratio))
 
-    if (canvas.width !== displayWidth || canvas.height !== displayHeight) {
-      canvas.width = displayWidth
-      canvas.height = displayHeight
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width
+      canvas.height = height
     }
+
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0)
+    return { width: width / ratio, height: height / ratio }
   }
 
-  function render(time) {
-    resize()
+  function draw(timeStamp) {
+    if (disposed) return
 
-    const seconds = time * 0.001
-    cameraAngle += 0.00035
+    const time = timeStamp * 0.001
+    const { width, height } = resize()
+    const project = createProjector(width, height, time)
 
-    gl.viewport(0, 0, canvas.width, canvas.height)
-    gl.clearColor(0.03, 0.045, 0.07, 1)
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
-    gl.enable(gl.DEPTH_TEST)
-    gl.disable(gl.CULL_FACE)
-    gl.useProgram(program)
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
+    const gradient = ctx.createLinearGradient(0, 0, 0, height)
+    gradient.addColorStop(0, '#08111f')
+    gradient.addColorStop(1, '#02050a')
+    ctx.clearRect(0, 0, width, height)
+    ctx.fillStyle = gradient
+    ctx.fillRect(0, 0, width, height)
 
-    gl.enableVertexAttribArray(positionLocation)
-    gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, stride, 0)
+    ctx.save()
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.22)'
+    ctx.shadowBlur = 14
+    ctx.shadowOffsetY = 12
 
-    gl.enableVertexAttribArray(colorLocation)
-    gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, stride, 3 * Float32Array.BYTES_PER_ELEMENT)
+    tiles.forEach((tile) => drawTile(ctx, project, tile, time, routeCells))
+    drawRouteLines(ctx, project)
 
-    gl.enableVertexAttribArray(normalLocation)
-    gl.vertexAttribPointer(normalLocation, 3, gl.FLOAT, false, stride, 6 * Float32Array.BYTES_PER_ELEMENT)
+    tiles.forEach((tile) => {
+      if (tile.type === 'forest') drawForest(ctx, project, tile.x, tile.z)
+      if (tile.type === 'rock' && (tile.x + tile.z) % 3 === 0) drawRock(ctx, project, tile.x, tile.z)
+    })
 
-    const aspect = canvas.width / canvas.height
-    const projection = perspective(Math.PI / 4, aspect, 0.1, 100)
-    const eye = [
-      Math.sin(cameraAngle) * cameraDistance,
-      11,
-      Math.cos(cameraAngle) * cameraDistance,
-    ]
-    const view = lookAt(eye, [0, 0.1, 0], [0, 1, 0])
-    const matrix = multiply(projection, view)
+    ROUTE_NODES
+      .slice()
+      .sort((a, b) => a.x + a.z - (b.x + b.z))
+      .forEach((node) => drawNode(ctx, project, node))
 
-    gl.uniformMatrix4fv(matrixLocation, false, new Float32Array(matrix))
-    gl.uniform1f(timeLocation, seconds)
-    gl.drawArrays(gl.TRIANGLES, 0, scene.length / 9)
+    ctx.restore()
 
-    animationFrame = requestAnimationFrame(render)
+    animationFrame = requestAnimationFrame(draw)
   }
 
-  function handleWheel(event) {
-    event.preventDefault()
-    cameraDistance = Math.min(28, Math.max(11, cameraDistance + event.deltaY * 0.01))
-  }
-
-  canvas.addEventListener('wheel', handleWheel, { passive: false })
-  animationFrame = requestAnimationFrame(render)
-  setStatus(`Mapa procedural ativo: ${scene.length / 9} vértices`)
+  setStatus(`Canvas procedural ativo: ${tiles.length} tiles, ${ROUTE_NODES.length} nós`)
+  animationFrame = requestAnimationFrame(draw)
 
   return () => {
+    disposed = true
     cancelAnimationFrame(animationFrame)
-    canvas.removeEventListener('wheel', handleWheel)
-    gl.deleteBuffer(buffer)
-    gl.deleteProgram(program)
   }
 }
 
@@ -426,13 +345,19 @@ export default function App() {
   const canvasRef = useRef(null)
   const [status, setStatus] = useState('Inicializando mapa procedural...')
 
+  const routeLabels = useMemo(() => ROUTES.map(([from, to]) => {
+    const a = ROUTE_NODES.find((node) => node.id === from)
+    const b = ROUTE_NODES.find((node) => node.id === to)
+    return `${a.label} → ${b.label}`
+  }), [])
+
   useEffect(() => {
     if (!canvasRef.current) return undefined
 
     try {
       return setupRenderer(canvasRef.current, setStatus)
     } catch (error) {
-      setStatus(error.message || 'Erro ao iniciar o mapa WebGL.')
+      setStatus(error.message || 'Erro ao iniciar o mapa procedural.')
       return undefined
     }
   }, [])
@@ -448,7 +373,7 @@ export default function App() {
         <p className="eyebrow">RPG procedural</p>
         <h1>Mapa 3D gerado por código</h1>
         <p className="description">
-          Mundo em Canvas/WebGL com tiles, rotas, nós de decisão, água animada e
+          Mundo procedural em HTML5 Canvas com tiles, rotas, nós de decisão, água animada e
           construções geométricas. Não usa GIF, SVG, imagens, texturas, GLB ou GLTF.
         </p>
 
@@ -460,11 +385,7 @@ export default function App() {
         <div className="route-card">
           <h2>Rotas narrativas</h2>
           <ul>
-            {ROUTES.map(([from, to]) => {
-              const a = ROUTE_NODES.find((node) => node.id === from)
-              const b = ROUTE_NODES.find((node) => node.id === to)
-              return <li key={`${from}-${to}`}>{a.label} → {b.label}</li>
-            })}
+            {routeLabels.map((label) => <li key={label}>{label}</li>)}
           </ul>
         </div>
 
